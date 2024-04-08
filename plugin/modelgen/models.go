@@ -263,8 +263,28 @@ func (m *Plugin) MutateConfig(cfg *config.Config) error {
 			}
 		}
 		goType := templates.CurrentImports.LookupType(field.Type)
+
+		var defaultValue string
+		if strings.HasPrefix(goType, "*") {
+			defaultValue = "nil"
+		} else {
+			switch goType {
+			case "string":
+				defaultValue = `""`
+			case "int", "int32", "int64":
+				defaultValue = "0"
+			case "float32", "float64":
+				defaultValue = "0.0"
+			case "bool":
+				defaultValue = "false"
+			default:
+				defaultValue = "nil"
+			}
+		}
+
 		if strings.HasPrefix(goType, "[]") {
 			getter := fmt.Sprintf("func (this %s) Get%s() %s {\n", templates.ToGo(model.Name), field.GoName, goType)
+			getter += fmt.Sprintf("\tif this == nil { return nil }\n")
 			getter += fmt.Sprintf("\tif this.%s == nil { return nil }\n", field.GoName)
 			getter += fmt.Sprintf("\tinterfaceSlice := make(%s, 0, len(this.%s))\n", goType, field.GoName)
 			getter += fmt.Sprintf("\tfor _, concrete := range this.%s { interfaceSlice = append(interfaceSlice, ", field.GoName)
@@ -278,16 +298,43 @@ func (m *Plugin) MutateConfig(cfg *config.Config) error {
 			getter += "}"
 			return getter
 		} else {
-			getter := fmt.Sprintf("func (this %s) Get%s() %s { return ", templates.ToGo(model.Name), field.GoName, goType)
-
-			if interfaceFieldTypeIsPointer && !structFieldTypeIsPointer {
-				getter += "&"
-			} else if !interfaceFieldTypeIsPointer && structFieldTypeIsPointer {
-				getter += "*"
+			var isBasicPtr bool
+			switch typ := field.Type.(type) {
+			case *types.Pointer:
+				elemTypeUnderlying := typ.Elem().Underlying()
+				switch elemTypeUnderlying.(type) {
+				case *types.Basic:
+					isBasicPtr = true
+				default:
+					isBasicPtr = false
+				}
 			}
 
-			getter += fmt.Sprintf("this.%s }", field.GoName)
-			return getter
+			var getter string
+			if interfaceFieldTypeIsPointer {
+				if isBasicPtr {
+					// return simple nil, as it's a pointer to a basic type
+					getter = fmt.Sprintf("func (this %s) Get%s() %s {\n", templates.ToGo(model.Name), field.GoName, goType)
+					getter += fmt.Sprintf("\tif this == nil { return nil }\n")
+					getter += fmt.Sprintf("\treturn this.%s\n", field.GoName)
+					getter += "}"
+					return getter
+				} else {
+					// return new instance of the type, as it's a pointer to a struct
+					goTypeWithNoPointer := strings.TrimPrefix(goType, "*")
+					getter = fmt.Sprintf("func (this %s) Get%s() %s {\n", templates.ToGo(model.Name), field.GoName, goType)
+					getter += fmt.Sprintf("\tif this == nil { return &%s }\n", goTypeWithNoPointer)
+					getter += fmt.Sprintf("\treturn this.%s\n", field.GoName)
+					getter += "}"
+					return getter
+				}
+			} else {
+				getter = fmt.Sprintf("func (this %s) Get%s() %s {\n", templates.ToGo(model.Name), field.GoName, goType)
+				getter += fmt.Sprintf("\tif this == nil { return %s }\n", defaultValue)
+				getter += fmt.Sprintf("\treturn this.%s\n", field.GoName)
+				getter += "}"
+				return getter
+			}
 		}
 	}
 	funcMap := template.FuncMap{
