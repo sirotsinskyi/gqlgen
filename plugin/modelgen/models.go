@@ -283,7 +283,7 @@ func (m *Plugin) MutateConfig(cfg *config.Config) error {
 		}
 
 		if strings.HasPrefix(goType, "[]") {
-			getter := fmt.Sprintf("func (this %s) Get%s() %s {\n", templates.ToGo(model.Name), field.GoName, goType)
+			getter := fmt.Sprintf("func (this *%s) Get%s() %s {\n", templates.ToGo(model.Name), field.GoName, goType)
 			getter += fmt.Sprintf("\tif this == nil { return nil }\n")
 			getter += fmt.Sprintf("\tif this.%s == nil { return nil }\n", field.GoName)
 			getter += fmt.Sprintf("\tinterfaceSlice := make(%s, 0, len(this.%s))\n", goType, field.GoName)
@@ -298,42 +298,77 @@ func (m *Plugin) MutateConfig(cfg *config.Config) error {
 			getter += "}"
 			return getter
 		} else {
-			var isBasicPtr bool
+			var isBasicType bool
+			var isPtr bool
+			var isNamed bool
+
 			switch typ := field.Type.(type) {
 			case *types.Pointer:
+				isPtr = true
 				elemTypeUnderlying := typ.Elem().Underlying()
+				if elemTypeUnderlying == nil {
+					isBasicType = true
+				}
 				switch elemTypeUnderlying.(type) {
 				case *types.Basic:
-					isBasicPtr = true
-				default:
-					isBasicPtr = false
+					isBasicType = true
 				}
+			case *types.Named:
+				isNamed = true
+				// special case for named interfaces: they'll be treated same as pointers of basic types
+				if _, isInterface := typ.Underlying().(*types.Interface); isInterface {
+					isNamed = false
+					isPtr = true
+					isBasicType = true
+				}
+			case *types.Basic:
+				isBasicType = true
 			}
 
 			var getter string
-			if interfaceFieldTypeIsPointer {
-				if isBasicPtr {
+			if isNamed {
+				getter = fmt.Sprintf("func (this *%s) Get%s() %s {\n", templates.ToGo(model.Name), field.GoName, goType)
+				getter += fmt.Sprintf("\tif this == nil { return %s(\"\") }\n", goType)
+				getter += fmt.Sprintf("\treturn this.%s\n", field.GoName)
+				getter += "}"
+				return getter
+			}
+			if isBasicType {
+				if isPtr {
 					// return simple nil, as it's a pointer to a basic type
-					getter = fmt.Sprintf("func (this %s) Get%s() %s {\n", templates.ToGo(model.Name), field.GoName, goType)
+					getter = fmt.Sprintf("func (this *%s) Get%s() %s {\n", templates.ToGo(model.Name), field.GoName, goType)
 					getter += fmt.Sprintf("\tif this == nil { return nil }\n")
+					getter += fmt.Sprintf("\treturn this.%s\n", field.GoName)
+					getter += "}"
+					return getter
+				} else {
+					// return simple default value, as it's a basic type
+					getter = fmt.Sprintf("func (this *%s) Get%s() %s {\n", templates.ToGo(model.Name), field.GoName, goType)
+					getter += fmt.Sprintf("\tif this == nil { return %s }\n", defaultValue)
+					getter += fmt.Sprintf("\treturn this.%s\n", field.GoName)
+					getter += "}"
+					return getter
+				}
+			} else {
+				//TODO the diff is & only
+				// non-basic type
+				if isPtr {
+					// return new instance of the type, as it's a pointer to a struct
+					goTypeWithNoPointer := strings.TrimPrefix(goType, "*")
+					getter = fmt.Sprintf("func (this *%s) Get%s() %s {\n", templates.ToGo(model.Name), field.GoName, goType)
+					getter += fmt.Sprintf("\tif this == nil { return &%s{} }\n", goTypeWithNoPointer)
 					getter += fmt.Sprintf("\treturn this.%s\n", field.GoName)
 					getter += "}"
 					return getter
 				} else {
 					// return new instance of the type, as it's a pointer to a struct
 					goTypeWithNoPointer := strings.TrimPrefix(goType, "*")
-					getter = fmt.Sprintf("func (this %s) Get%s() %s {\n", templates.ToGo(model.Name), field.GoName, goType)
-					getter += fmt.Sprintf("\tif this == nil { return &%s }\n", goTypeWithNoPointer)
+					getter = fmt.Sprintf("func (this *%s) Get%s() %s {\n", templates.ToGo(model.Name), field.GoName, goType)
+					getter += fmt.Sprintf("\tif this == nil { return %s{} }\n", goTypeWithNoPointer)
 					getter += fmt.Sprintf("\treturn this.%s\n", field.GoName)
 					getter += "}"
 					return getter
 				}
-			} else {
-				getter = fmt.Sprintf("func (this %s) Get%s() %s {\n", templates.ToGo(model.Name), field.GoName, goType)
-				getter += fmt.Sprintf("\tif this == nil { return %s }\n", defaultValue)
-				getter += fmt.Sprintf("\treturn this.%s\n", field.GoName)
-				getter += "}"
-				return getter
 			}
 		}
 	}
